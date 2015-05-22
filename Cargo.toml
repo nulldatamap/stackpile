@@ -2,3 +2,6 @@
 name = "stackpile"
 version = "0.1.0"
 authors = ["Nulldata <thebreadcat@gmail.com>"]
+
+[dependencies]
+num_cpus = "*"
