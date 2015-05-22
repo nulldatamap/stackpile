@@ -1,8 +1,37 @@
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 
+// An operation that can be executed
+enum Op {
+  Nop,
+  Push( TaggedValue ),
+  Pop,
+  Invoke( TaggedValue )
+}
+
+// The representation of all values in Stackpile (either immidiate or indirect) 
+enum TaggedValue {
+  Int( i32 ),
+  Float( f32 ),
+  Bool( bool )
+}
+
+// A tasks execution stack
+struct Stack {
+  content : Vec<TaggedValue>
+}
+
+// Representation of the code of a given task
+struct Code {
+  ops : Vec<Op>
+}
+
 // A single unit of concurrent execution
-struct Task;
+struct Task {
+  stack : Stack,
+  code  : Code,
+}
+
 // An immutable data-structure to store all constant data needed at runtime
 struct ConstantTable;
 
