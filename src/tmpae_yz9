@@ -1,9 +1,0 @@
-
-struct Scheduler {
-  rou
-}
-
-struct Runtime {
-  scheduler : Scheduler,
-  constants : ConstantTable
-}

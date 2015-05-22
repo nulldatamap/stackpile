@@ -1,5 +1,0 @@
-
-struct Runtime {
-  scheduler : Scheduler,
-  constants
-}

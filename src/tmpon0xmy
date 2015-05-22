@@ -1,9 +1,0 @@
-
-struct Scheduler {
-  tasks : Vec
-}
-
-struct Runtime {
-  scheduler : Scheduler,
-  constants : ConstantTable
-}
