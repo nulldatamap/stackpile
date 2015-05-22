@@ -1,0 +1,6 @@
+
+mod runtime;
+
+fn main() {
+  println!("Welcome to Sta");
+}

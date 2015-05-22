@@ -1,0 +1,9 @@
+
+struct Scheduler {
+  taskas
+}
+
+struct Runtime {
+  scheduler : Scheduler,
+  constants : ConstantTable
+}

@@ -1,0 +1,10 @@
+
+struct Scheduler {
+  tasks : Vec<Task>,
+
+}
+
+struct Runtime {
+  schedulers : Scheduler,
+  constants : ConstantTable
+}

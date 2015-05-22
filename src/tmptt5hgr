@@ -1,0 +1,32 @@
+
+struct T
+
+enum WorkerReport {
+  Dead,
+  Asleep,
+  Available,
+  Okay
+}
+
+enum WorkerCommand {
+  RequestTaskSpawn,
+  SpawnTask( Task ),
+  Die
+}
+
+struct Worker {
+  rewrites : u32,
+  tasks    : Vec<Task>,
+  current_task : Option<&mut Task>
+}
+
+struct Scheduler {
+  worker_handles : Vec<WorkerHandle>
+  rewrite_quota  : u32,
+  inbox          : Reciever<WorkerReport>
+}
+
+struct Runtime {
+  schedulers : Scheduler,
+  constants  : Arc<ConstantTable>
+}

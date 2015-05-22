@@ -1,0 +1,10 @@
+
+struct Scheduler {
+  worker_handles : V
+
+}
+
+struct Runtime {
+  schedulers : Scheduler,
+  constants  : ConstantTable
+}

@@ -1,0 +1,15 @@
+
+struct Worker {
+  rewrites : s
+}
+
+struct Scheduler {
+  worker_handles : Vec<WorkerHandle>
+  master_worker  : Worker,
+  rewrite_quota  : u32
+}
+
+struct Runtime {
+  schedulers : Scheduler,
+  constants  : Arc<ConstantTable>
+}

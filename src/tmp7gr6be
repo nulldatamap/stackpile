@@ -1,0 +1,26 @@
+
+enum WorkerReport {
+  Dead,
+  Asleep,
+  Available
+}
+
+enum WorkerCommand {
+
+}
+
+struct Worker {
+  rewrites : u32,
+  tas : 
+}
+
+struct Scheduler {
+  worker_handles : Vec<WorkerHandle>
+  rewrite_quota  : u32,
+  inbox          : Reciever<WorkerReport>
+}
+
+struct Runtime {
+  schedulers : Scheduler,
+  constants  : Arc<ConstantTable>
+}

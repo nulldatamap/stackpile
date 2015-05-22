@@ -1,0 +1,11 @@
+
+struct Scheduler {
+  worker_handles : Vec<WorkerHandle>
+  master_worker  : Worker,
+  rewr
+}
+
+struct Runtime {
+  schedulers : Scheduler,
+  constants  : ConstantTable
+}
