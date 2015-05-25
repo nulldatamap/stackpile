@@ -1,3 +1,5 @@
+#![feature(collections_drain)]
+
 extern crate num_cpus;
 
 mod runtime;
@@ -16,9 +18,9 @@ fn main() {
   // main -> print 13.37 42
   let f_main =
       Function { arity: 0
-               , code : vec![ Op::Push( TaggedValue::Int( 42 ) )
+               , code : vec![ Op::PrintStack
                             , Op::Push( TaggedValue::Float( 13.37 ) )
-                            , Op::PrintStack ] };
+                            , Op::Push( TaggedValue::Int( 42 ) ) ] };
 
   let ct =
     ConstantTable { names: vec![ ("main".to_string(), 0) ]

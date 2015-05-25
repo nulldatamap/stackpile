@@ -3,12 +3,7 @@ use std::sync::Arc;
 use std::thread;
 use ::num_cpus;
 
-/*
-  Runtime model:
-  - The runtime is created spawning a scheduler
-  - The scheduler will then create a thread with a worker and spawn a task
-    running the code at it's entry point
-*/
+// TODO: Split this up into smaller files
 
 // The representation of functions
 #[derive(Clone)]
@@ -36,7 +31,7 @@ pub enum ConstVal {
 }
 
 // The representation of all values in Stackpile (either immidiate or indirect) 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum TaggedValue {
   Int( i32 ),
   Float( f32 ),
@@ -50,6 +45,12 @@ pub type Stack = Vec<TaggedValue>;
 // Representation of the code of a given task
 pub type Code = Vec<Op>;
 
+enum TaskStatus {
+  Ok,
+  Dead,
+  Yielded
+}
+
 // A single unit of concurrent execution
 pub struct Task {
   stack : Stack,
@@ -62,10 +63,21 @@ impl Task {
          , stack: Vec::new() }
   }
 
-  pub fn step( &mut self ) -> bool {
-    // TODO
-    println!("Hello world from a task!");
-    false
+  pub fn step( &mut self ) -> TaskStatus {
+    // TODO: Move this execution part to it's own
+    match self.code.pop().unwrap() {
+      Op::Nop => {},
+      Op::Push( v ) => self.stack.push( v ),
+      Op::Pop => { self.stack.pop(); },
+      Op::Invoke( v ) => unimplemented!(),
+      Op::PrintStack => println!( "{:?}", self.stack )
+    }
+
+    if self.code.is_empty()  {
+      TaskStatus::Dead
+    } else {
+      TaskStatus::Ok
+    }
   }
 }
 
@@ -99,8 +111,11 @@ impl ConstantTable {
   }
 }
 
+type WorkerId = u32;
+
 // A reference to a given worker
 pub struct WorkerHandle {
+  id         : WorkerId,
   outbox     : Sender<WorkerCommand>,
   task_count : u32,
   handle     : thread::JoinHandle<()>
@@ -108,8 +123,9 @@ pub struct WorkerHandle {
 
 // Status reports that the worker will report back to the scheduler
 pub enum WorkerReport {
-  Dead,
-  Finsihed,
+  Dead( WorkerId ),
+  Finsihed( WorkerId ),
+  SpawnTask( Task )
 }
 
 // Commands that the scheduler can send the worker
@@ -120,6 +136,7 @@ pub enum WorkerCommand {
 
 // A concurrent task manager for it's own thread
 pub struct Worker {
+  id            : WorkerId,
   outbox        : Sender<WorkerReport>,
   inbox         : Receiver<WorkerCommand>,
   rewrites      : u32,
@@ -130,10 +147,11 @@ pub struct Worker {
 }
 
 impl Worker {
-  fn new( inbox : Receiver<WorkerCommand>, outbox : Sender<WorkerReport>
-        , quota : u32 ) -> Worker {
+  fn new( id : WorkerId, inbox : Receiver<WorkerCommand>
+        , outbox : Sender<WorkerReport>, quota : u32 ) -> Worker {
  
-    Worker { outbox       : outbox
+    Worker { id           : id
+           , outbox       : outbox
            , inbox        : inbox
            , rewrites     : 0
            , rewrite_quota: quota
@@ -143,24 +161,14 @@ impl Worker {
   }
 
   fn run( &mut self ) {
-    println!("Up and running, waiting for first task");
     self.next_task();
 
     while self.alive {
-      println!("Begin execution");
-      if self.step_current_task() {
-        self.rewrites += 1;
-        if self.rewrites == self.rewrite_quota {
-          self.rewrites = 0;
 
-          // Try to switch to the next task
-          if !self.next_task() {
-            // If we fail to get the next task, that's because we've been killed
-            break
-          }
-        }
-      } else {
-        self.remove_current_task();
+      match self.step_current_task() {
+        TaskStatus::Ok => self.tick_task(),
+        TaskStatus::Dead => self.remove_current_task(),
+        TaskStatus::Yielded => self.next_task()
       }
 
       self.check_for_interrupt();
@@ -169,19 +177,26 @@ impl Worker {
     self.shutdown();
   }
 
-  fn next_task( &mut self ) -> bool {
+  fn tick_task( &mut self ) {
+    self.rewrites += 1;
+
+    if self.rewrites == self.rewrite_quota {
+      self.rewrites = 0;
+    }
+  }
+
+  fn next_task( &mut self ) {
     // If there's no tasks, wait for one
     if self.tasks.len() == 0 {
       self.wait_for_task();
       self.current_task = 0;
       // Check if we've been killed while waitng for the next task
       if !self.alive {
-        return false
+        return
       }
     }
     // Get the next task in a vector ( cyclic )
     self.current_task = ( self.current_task + 1 ) % self.tasks.len();
-    true
   }
 
   fn wait_for_task( &mut self ) {
@@ -197,7 +212,7 @@ impl Worker {
     }
   }
 
-  fn step_current_task( &mut self ) -> bool {
+  fn step_current_task( &mut self ) -> TaskStatus {
     let task = &mut self.tasks[self.current_task];
     task.step()
   }
@@ -205,6 +220,8 @@ impl Worker {
   // Check if there's a command sent to the worker
   // if there's no active tasks, we block and wait
   fn check_for_interrupt( &mut self ) {
+    if !self.alive { return }
+
     match self.inbox.try_recv() {
       Ok( WorkerCommand::SpawnTask( t ) ) => {
         self.tasks.push( t );
@@ -226,15 +243,22 @@ impl Worker {
 
     // Our current task index is automatically pointing to the next
     // task after a we remove one, but we have to make sure it's in bounds:
-    self.current_task = self.current_task % self.tasks.len();
+    self.current_task = if self.tasks.len() <= 1 {
+      0
+    } else {
+      self.current_task - 1
+    };
 
     // Tell the scheduler we finished a task
-    self.outbox.send( WorkerReport::Finsihed );
+    self.outbox.send( WorkerReport::Finsihed( self.id ) );
+
+    // And switch to the next task
+    self.next_task();
   }
 
   fn shutdown( &mut self ) {
     // TODO: Shutdown the task properly
-    self.outbox.send( WorkerReport::Dead );
+    self.outbox.send( WorkerReport::Dead( self.id ) );
   }
 }
 
@@ -262,15 +286,18 @@ impl Scheduler {
 
   fn spawn_worker( &mut self ) -> &mut WorkerHandle {
     let (wo, wi) = channel();
+
+    let wid = self.worker_handles.len() as WorkerId;
+
     let mut worker =
-      Worker::new( wi, self.outbox_seed.clone(), self.rewrite_quota );
+      Worker::new( wid, wi, self.outbox_seed.clone(), self.rewrite_quota );
 
     // Spawn the worker in it's own thread
     let h = thread::spawn( move || { worker.run() } );
 
     // Create and register a handle for the worker
     let worker_handle =
-      WorkerHandle { task_count: 0, outbox: wo, handle : h };
+      WorkerHandle { id : wid, task_count: 0, outbox: wo, handle : h };
 
     self.worker_handles.push( worker_handle );
     
@@ -326,8 +353,51 @@ impl Scheduler {
   }
 
   fn run( &mut self ) {
-    // TODO
+    // Keep managing the workers until all workers have finished their tasks
+    while self.task_count != 0 {
+      self.wait_for_worker_report();
+    }
+    self.shutdown_workers();
   }
+
+  fn wait_for_worker_report( &mut self ) {
+
+    // Unwrap since if the worker has paniced we shall too
+    match self.inbox.recv().unwrap() {
+      WorkerReport::Finsihed( wid ) => self.worker_finished( wid ),
+      WorkerReport::Dead( wid ) => self.worker_crashed( wid ),
+      WorkerReport::SpawnTask( t ) => self.spawn_task( t )
+    }
+  }
+
+  fn worker_finished( &mut self, wid : WorkerId ) {
+    // Find the worker with the given ID
+    for wh in self.worker_handles.iter_mut() {
+      if wh.id == wid {
+        // Since it finished the task we decrement it's counter
+        wh.task_count -= 1;
+        self.task_count -= 1;
+      }
+    }
+  }
+
+  fn worker_crashed( &mut self, wid : WorkerId ) {
+    // TODO: We might want to actually handle this properly
+    panic!( "Worker {} crashed/ended unexpectedly!", wid )
+  }
+
+  fn shutdown_workers( &mut self ) {
+    // Tell them all to die
+    for worker in self.worker_handles.drain( .. ) {
+      worker.outbox.send( WorkerCommand::Die );
+      // Then wait for the thread to stop
+      worker.handle.join();
+      // Even though the workers will probably not shut down in the order we're
+      // joining their thread, it doesn't really matter since we still have to
+      // wait for the slowest thread to end before we stop execution.
+    }
+  }
+
 }
 
 pub struct RuntimeSettings {
