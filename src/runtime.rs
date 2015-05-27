@@ -1,6 +1,7 @@
 use std::sync::mpsc::{Receiver, Sender, channel, TryRecvError};
 use std::sync::Arc;
 use std::thread;
+use std::mem::transmute;
 use ::num_cpus;
 
 // TODO: Split this up into smaller files
@@ -8,42 +9,131 @@ use ::num_cpus;
 // The representation of functions
 #[derive(Clone)]
 pub struct Function {
-  pub code  : Code,
-  pub arity : u32
+  pub code  : Code
+}
+
+#[derive(Debug, Clone)]
+enum OpDecodeError {
+  UnknownOp( u8, usize ),
+  NoArgument( u8, usize )
 }
 
 // An operation that can be executed
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Op {
   Nop,
-  Push( TaggedValue ),
+  Push( u32 ),
   Pop,
-  Invoke( TaggedValue ),
-  PrintStack
+  Dup,
+  Swap,
+  Put( u32 ),
+  Rem( u32 ),
+  Yield,
+  Call( ConstRef ),
+  Callf( ConstRef ),
+  If( ConstRef, ConstRef )
+}
+
+struct OpCursor<'a> {
+  index : usize,
+  code  : &'a [u8]
+}
+
+impl<'a> OpCursor<'a> {
+  fn next_u32( &mut self, op : u8 ) -> Result<u32, OpDecodeError> {
+    // Make sure there's actually a u32 available, if not
+    if self.index < 4 {
+      // Error out with the op that required it and where it railed
+      Err( OpDecodeError::NoArgument( op, self.index ) )
+    } else {
+      self.index -= 4;
+      let v : &u32;
+      unsafe {
+        // Transmute the the &[u8; 4] to a &u32 since they have the same width
+        v = transmute( &self.code[self.index] as *const u8 );
+      }
+      Ok( *v )
+    }
+  }
+}
+
+impl Op {
+  fn decode( code : &[u8] ) -> Result<(Op, usize), OpDecodeError> {
+    let mut cursor = OpCursor { index: code.len() - 1, code: code };
+    let op = code[code.len() - 1];
+    Ok( match op {
+      0x00 => (Op::Nop, 1),
+      0x01 => {
+        let val = try!( cursor.next_u32( op ) );
+        (Op::Push( val ), 1 + 4)
+      },
+      0x02 => (Op::Pop, 1),
+      0x03 => (Op::Dup, 1),
+      0x04 => (Op::Swap, 1),
+      0x05 => {
+        let val = try!( cursor.next_u32( op ) );
+        (Op::Put( val ), 1 + 4)
+      },
+      0x06 => {
+        let val = try!( cursor.next_u32( op ) );
+        (Op::Rem( val ), 1 + 4)
+      },
+      0x07 => (Op::Yield, 1),
+      0x08 => {
+        let val = try!( cursor.next_u32( op ) );
+        (Op::Call( val ), 1 + 4)
+      },
+      0x09 => {
+        let val = try!( cursor.next_u32( op ) );
+        (Op::Callf( val ), 1 + 4)
+      },
+      0x0A => {
+        let then_code = try!( cursor.next_u32( op ) );
+        let else_code = try!( cursor.next_u32( op ) );
+        (Op::If( then_code, else_code ), 1 + 4 + 4 )
+      },
+      _    => return Err( OpDecodeError::UnknownOp( op, code.len() - 1 ) )
+    } )
+  }
 }
 
 pub type ConstRef = u32;
 
-#[derive(Clone)]
-pub enum ConstVal {
-  Function( Function ),
-  Atom( String )
-}
-
-// The representation of all values in Stackpile (either immidiate or indirect) 
-#[derive(Clone, Debug)]
-pub enum TaggedValue {
-  Int( i32 ),
-  Float( f32 ),
-  Bool( bool ),
-  Const( ConstRef )
-}
-
 // A tasks execution stack
-pub type Stack = Vec<TaggedValue>;
+pub type Stack = Vec<u32>;
 
-// Representation of the code of a given task
-pub type Code = Vec<Op>;
+// A code stack
+#[derive(Clone)]
+pub struct Code {
+  code : Vec<u8>
+}
+
+impl Code {
+  pub fn new( c : Vec<u8> ) -> Code {
+    Code { code: c }
+  }
+}
+
+impl Iterator for Code {
+  type Item = Op;
+
+  fn next( &mut self ) -> Option<Op> {
+    // No need to continue
+    if self.code.is_empty() { return None }
+
+    match Op::decode( &self.code[..] ) {
+      // The decoding succeeded with `bc` amount of bytes read
+      Ok( (op, bc) ) => {
+        // Remove the decoded bytes
+        let new_length = self.code.len() - bc;
+        self.code.truncate( new_length );
+        Some( op )
+      },
+      // TODO: Handle this in a better way
+      Err( err ) => panic!( "Error while decoding bytecode: {:?}", err )
+    }
+  }
+}
 
 enum TaskStatus {
   Ok,
@@ -53,30 +143,26 @@ enum TaskStatus {
 
 // A single unit of concurrent execution
 pub struct Task {
+  constants : Arc<ConstantTable>,
   stack : Stack,
   code  : Code,
 }
 
 impl Task {
-  pub fn new( code : Code ) -> Task {
-    Task { code : code
-         , stack: Vec::new() }
+  pub fn new( code : Code, ct : Arc<ConstantTable> ) -> Task {
+    Task { constants: ct
+         , code     : code
+         , stack    : Vec::new() }
   }
 
   pub fn step( &mut self ) -> TaskStatus {
     // TODO: Move this execution part to it's own
-    match self.code.pop().unwrap() {
-      Op::Nop => {},
-      Op::Push( v ) => self.stack.push( v ),
-      Op::Pop => { self.stack.pop(); },
-      Op::Invoke( v ) => unimplemented!(),
-      Op::PrintStack => println!( "{:?}", self.stack )
-    }
-
-    if self.code.is_empty()  {
-      TaskStatus::Dead
-    } else {
-      TaskStatus::Ok
+    match self.code.next() {
+      Some( op ) => {
+        println!( "{:?}", op );
+        TaskStatus::Ok
+      },
+      None       => TaskStatus::Dead
     }
   }
 }
@@ -84,7 +170,7 @@ impl Task {
 // An immutable data-structure to store all constant data needed at runtime
 pub struct ConstantTable {
   pub names     : Vec<(String, ConstRef)>,
-  pub constants : Vec<ConstVal>
+  pub constants : Vec<u8>
 }
 
 impl ConstantTable {
@@ -101,13 +187,33 @@ impl ConstantTable {
       panic!( "Expected one main function!" )
     }
 
-    // Take the looked up atom and fetch the code from it
-    let mcode = &self.constants[mmain.pop().unwrap().1 as usize];
+    self.get_code( mmain.pop().unwrap().1 as usize )
+  }
 
-    match mcode {
-      &ConstVal::Function( ref f ) => f.code.clone(),
-      _ => panic!( "Expected main to be a function" )
+  fn get_chunk( &self, idx : usize ) -> &[u8] {
+    // Make sure the index in is bounds
+    assert!( idx < self.constants.len() );
+    // And make sure we got space for the SIZE field
+    assert!( idx + 4 <= self.constants.len() );
+
+    let size : u32;
+    unsafe {
+      // Read the u32 size field
+      size = *transmute::<_, &u32>( &self.constants[idx] as *const u8 );
     }
+
+    // Make sure the chunk data is inside bounds too
+    assert!( idx + 4 + (size as usize) <= self.constants.len() );
+
+    let low  = idx + 4;
+    let high = idx + 4 + (size as usize);
+
+    &self.constants[low..high]
+  }
+
+  fn get_code( &self, idx : usize ) -> Code {
+    let code_bytes = self.get_chunk( idx );
+    Code { code: code_bytes.to_vec() }
   }
 }
 
@@ -431,7 +537,8 @@ impl Runtime {
   }
 
   pub fn run( &mut self ) {
-    self.scheduler.spawn_task( Task::new( self.constants.main() ) );
+    self.scheduler.spawn_task( Task::new( self.constants.main()
+                                        , self.constants.clone() ) );
     self.scheduler.run();
   }
 }
