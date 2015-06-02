@@ -1,7 +1,7 @@
 use std::sync::mpsc::{Receiver, Sender, channel, TryRecvError};
 use std::sync::Arc;
 use std::thread;
-use std::mem::transmute;
+use std::mem::{size_of, transmute};
 use ::num_cpus;
 
 // TODO: Split this up into smaller files
@@ -12,6 +12,8 @@ pub struct Function {
   pub code  : Code
 }
 
+type ForeignFunction = fn( &mut Task ) -> TaskStatus;
+
 #[derive(Debug, Clone)]
 enum OpDecodeError {
   UnknownOp( u8, usize ),
@@ -19,14 +21,14 @@ enum OpDecodeError {
 }
 
 // An operation that can be executed
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum Op {
   Nop,
   Push( u32 ),
   Pop,
   Dup,
   Swap,
-  Put( u32 ),
+  Peek( u32 ),
   Rem( u32 ),
   Yield,
   Call( ConstRef ),
@@ -72,7 +74,7 @@ impl Op {
       0x04 => (Op::Swap, 1),
       0x05 => {
         let val = try!( cursor.next_u32( op ) );
-        (Op::Put( val ), 1 + 4)
+        (Op::Peek( val ), 1 + 4)
       },
       0x06 => {
         let val = try!( cursor.next_u32( op ) );
@@ -94,6 +96,76 @@ impl Op {
       },
       _    => return Err( OpDecodeError::UnknownOp( op, code.len() - 1 ) )
     } )
+  }
+
+  // TODO: Don't panic, actually return an error
+  fn execute( &self, task : &mut Task ) -> TaskStatus {
+    use self::Op::{ Nop, Push, Pop, Dup, Swap, Peek
+                  , Rem, Yield, Call, Callf, If };
+
+    // Higher bound index of the stack
+    let high = if task.stack.len() == 0 {
+      0
+    } else {
+      task.stack.len() - 1
+    };
+
+    match *self {
+      Nop => {},
+      Push( v ) => task.stack.push( v ),
+      Pop =>
+        match task.stack.pop() {
+          None => panic!( "Tried to pop an empty stack" ),
+          _ => {}
+        },
+      Dup => {
+        assert!( !task.stack.is_empty() );
+
+        let v = task.stack[high];
+        task.stack.push( v );
+      },
+      Swap => {
+        assert!( task.stack.len() >= 2 );
+
+        let tmp = task.stack[high - 1];
+        task.stack[high - 1] = task.stack[high];
+        task.stack[high] = tmp;
+      },
+      Peek( n ) => {
+        assert!( (n as usize) < task.stack.len() );
+
+        let v = task.stack[high - (n as usize)];
+        task.stack.push( v );
+      },
+      Rem( n ) => {
+        assert!( (n as usize) < task.stack.len() );
+
+        task.stack.remove( high - (n as usize) );
+      },
+      Yield => {
+        return TaskStatus::Yielded
+      },
+      Call( f ) => {
+        let code = task.constants.get_chunk( f as usize );
+
+        task.code.code.push_all( code );
+      },
+      Callf( ff ) => {
+        // Get and call the foreign function
+        return task.constants.get_foreign_function( ff as usize )( task );
+      },
+      If( t, e ) => {
+        assert!( !task.stack.is_empty() );
+        let cond = task.stack.pop().unwrap();
+        if cond != 0 {
+          Call( t ).execute( task );
+        } else {
+          Call( e ).execute( task );
+        }
+      }
+    }
+
+    TaskStatus::Ok
   }
 }
 
@@ -135,7 +207,7 @@ impl Iterator for Code {
   }
 }
 
-enum TaskStatus {
+pub enum TaskStatus {
   Ok,
   Dead,
   Yielded
@@ -143,12 +215,13 @@ enum TaskStatus {
 
 // A single unit of concurrent execution
 pub struct Task {
-  constants : Arc<ConstantTable>,
-  stack : Stack,
-  code  : Code,
+  pub constants : Arc<ConstantTable>,
+  pub stack : Stack,
+  pub code  : Code,
 }
 
 impl Task {
+  // TODO: Pre-allocate memory for stack and code-space
   pub fn new( code : Code, ct : Arc<ConstantTable> ) -> Task {
     Task { constants: ct
          , code     : code
@@ -159,10 +232,10 @@ impl Task {
     // TODO: Move this execution part to it's own
     match self.code.next() {
       Some( op ) => {
-        println!( "{:?}", op );
-        TaskStatus::Ok
+        let v = op.execute( self );
+        v
       },
-      None       => TaskStatus::Dead
+      None => TaskStatus::Dead
     }
   }
 }
@@ -175,7 +248,7 @@ pub struct ConstantTable {
 
 impl ConstantTable {
   // Get's the main function ( if defined )
-  fn main( &self ) -> Code {
+  pub fn main( &self ) -> Code {
     // TODO: Probably shouldn't use a vector due to unnecesarry allocation
     let mut mmain : Vec<_> = 
       self.names.iter()
@@ -190,7 +263,23 @@ impl ConstantTable {
     self.get_code( mmain.pop().unwrap().1 as usize )
   }
 
-  fn get_chunk( &self, idx : usize ) -> &[u8] {
+  pub fn get_foreign_function( &self, idx : usize ) -> ForeignFunction {
+    assert!( idx < self.constants.len() );
+
+    let ff_size = size_of::<ForeignFunction>();
+
+    assert!( idx + ff_size <= self.constants.len() );
+
+    let ff : ForeignFunction;
+    unsafe {
+      ff =
+        *transmute::<_, &ForeignFunction>( &self.constants[idx] as *const u8 );
+    }
+
+    ff
+  }
+
+  pub fn get_chunk( &self, idx : usize ) -> &[u8] {
     // Make sure the index in is bounds
     assert!( idx < self.constants.len() );
     // And make sure we got space for the SIZE field
@@ -211,7 +300,7 @@ impl ConstantTable {
     &self.constants[low..high]
   }
 
-  fn get_code( &self, idx : usize ) -> Code {
+  pub fn get_code( &self, idx : usize ) -> Code {
     let code_bytes = self.get_chunk( idx );
     Code { code: code_bytes.to_vec() }
   }

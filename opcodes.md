@@ -1,14 +1,15 @@
-OPCODE SET:
+OPCODE SET (non-strict VM):
 NOP       - Do nothing
 PUSH V    - Push a 32bit value V onto the stack
 POP       - Remove a value from the top of stack
 DUP       - Duplicate the top value of the stack
 SWAP      - Swap the two top values of the stack
-PUT N     - Copy the Nth value of the stack to the top
+PEEK N    - Copy the Nth value of the stack to the top
 REM N     - Remove the NTh value of the stack
 YIELD     - Yield the task to another
 CALL F    - Call a function F
-CALLF F   - Call a foreign function F 
+CALLF F   - Call a foreign function F
+IF        - If ...
 
 main ->
   print (fib 3)
@@ -20,16 +21,14 @@ fib x ->
 
 <main>
 ..  PUSH 3
-..  CALL 1
+..  CALL <fib>
 ..  CALLF <print>
 
 <fib>
 ..  DUP
 ..  PUSH 2
 ..  CALLF <int32_less_than>
-..  PUSH <fib$then$0>
-..  PUSH <fib$else$0>
-..  IF
+..  IF <fib$then$0> <fib$else$0>
 
 <fib$then$0>
     POP
