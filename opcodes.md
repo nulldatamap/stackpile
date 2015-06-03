@@ -9,7 +9,8 @@ REM N     - Remove the NTh value of the stack
 YIELD     - Yield the task to another
 CALL F    - Call a function F
 CALLF F   - Call a foreign function F
-IF        - If ...
+IF T E    - If the top of the stack is non-zero execute T, else execute E
+SPAWN F   - Spawn a new task with the code F
 
 main ->
   print (fib 3)
