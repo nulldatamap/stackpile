@@ -2,6 +2,7 @@ use std::sync::mpsc::{Receiver, Sender, channel, TryRecvError};
 use std::sync::Arc;
 use std::thread;
 use std::mem::{size_of, transmute};
+use std::ops::{Index, IndexMut};
 use ::num_cpus;
 
 // TODO: Split this up into smaller files
@@ -88,6 +89,7 @@ impl Op {
   fn decode( code : &[u8] ) -> Result<(Op, usize), OpDecodeError> {
     let mut cursor = OpCursor { index: code.len() - 1, code: code };
     let op = code[code.len() - 1];
+
     Ok( match op {
       0x00 => (Op::Nop, 1),
       0x01 => (Op::Yield, 1),
@@ -157,96 +159,112 @@ impl Op {
 
   // TODO: Don't panic, actually return an error
   fn execute( &self, task : &mut Task ) -> TaskStatus {
+    use self::Op::*;
 
-    // Higher bound index of the stack
-    let high = if task.stack.len() == 0 {
-      0
-    } else {
-      task.stack.len() - 1
-    };
-
-    /*match *self {
+    match *self {
       Nop => {},
-      Push( v ) => task.stack.push( v ),
-      Pop =>
-        match task.stack.pop() {
-          None => panic!( "Tried to pop an empty stack" ),
-          _ => {}
-        },
-      Dup => {
-        assert!( !task.stack.is_empty() );
-
-        let v = task.stack[high];
-        task.stack.push( v );
-      },
-      Swap => {
-        assert!( task.stack.len() >= 2 );
-
-        let tmp = task.stack[high - 1];
-        task.stack[high - 1] = task.stack[high];
-        task.stack[high] = tmp;
-      },
-      Peek( n ) => {
-        assert!( (n as usize) < task.stack.len() );
-
-        let v = task.stack[high - (n as usize)];
-        task.stack.push( v );
-      },
-      Rem( n ) => {
-        assert!( (n as usize) < task.stack.len() );
-
-        task.stack.remove( high - (n as usize) );
-      },
       Yield => {
         return TaskStatus::Yielded
       },
-      Call( f ) => {
-        let code = task.constants.get_chunk( f as usize );
-
-        task.code.code.push_all( code );
-      },
-      Callf( ff ) => {
-        // Get and call the foreign function
-        return task.constants.get::<ForeignFunction>( ff as usize )( task );
-      },
-      If( t, e ) => {
-        assert!( !task.stack.is_empty() );
-        let cond = task.stack.pop().unwrap();
-        if cond != 0 {
-          Call( t ).execute( task );
-        } else {
-          Call( e ).execute( task );
-        }
-      },
       Spawn( f ) => {
-        let code = task.constants.get_code( f as usize );
-        let ntask = Task::new( code, task.constants.clone() );
-        return TaskStatus::Spawning( ntask )
+        let t =
+          Task::new( task.constants.get_code( f ), task.constants.clone() );
+        return TaskStatus::Spawning( t );
       },
-      Maptop( f ) => {
-        assert!( !task.stack.is_empty() );
-
-        let map = task.constants.get::<ForeignMap>( f as usize );
-        map( &mut task.stack[high], task.constants.clone() );
+      If( x, t, e ) => {
+        let b = if task.stage[x] != 0 { t } else { e };
+        task.expand( b );
       },
-      Binop( f ) => {
-        assert!( task.stack.len() >= 2 );
+      Call( x, f ) => {
+        // Make sure we have the stage setup correctly for the call
+        task.temporary_offset( x );
 
-        let binop = task.constants.get::<ForeignBinop>( f as usize );
-        let (b, a) = (task.stack[high], task.stack[high - 1]);
-        task.stack[high - 1] = binop( a, b, task.constants.clone() );
-        // Remove the last element
-        task.stack.truncate( high );
+        task.expand( f );
+      },
+      Callf( x, f ) => {
+        task.temporary_offset( x );
+        
+        return task.constants.get::<ForeignFunction>( f )( task );
+      },
+      Map( x, f ) => {
+        let map = task.constants.get::<ForeignMap>( f );
+        task.stage[x] = map( task.stage[x], task.constants.clone() );
+      },
+      Mapto( x, y, f ) => {
+        let map = task.constants.get::<ForeignMap>( f );
+        task.stage[y] = map( task.stage[x], task.constants.clone() );
+      },
+      Binop( x, f ) => {
+        let binop = task.constants.get::<ForeignBinop>( f );
+        task.stage[x] =
+          binop( task.stage[x], task.stage[x + 1], task.constants.clone() );
+      },
+      Callv( x, v ) => {
+        Callf( x, task.stage[v] as ConstRef ).execute( task );
+      },
+      Swap( x, y ) => {
+        let tmp = task.stage[x];
+        task.stage[x] = task.stage[y];
+        task.stage[y] = tmp;
+      },
+      Move( x, y ) => {
+        task.stage[y] = task.stage[x];
+      },
+      Set( x, v ) => {
+        task.stage[x] = v;
+      },
+      Cursor( o ) => {
+        task.stage.offset( o );
       }
-    }*/
+    }
     TaskStatus::Ok
   }
 }
 
 pub type ConstRef = usize;
 
-// A tasks execution stack
-pub type Stack = Vec<u32>;
+pub struct Stage {
+  inner : Vec<u32>,
+  cursor : usize
+}
+
+impl Stage {
+  fn new( prealloc : usize ) -> Stage {
+    Stage { inner: Vec::with_capacity( prealloc )
+          , cursor: 0 }
+  }
+
+  fn offset( &mut self, offset : isize ) {
+    let nc = offset + (self.cursor as isize);
+    assert!( nc >= 0 );
+    self.cursor = nc as usize;
+  }
+}
+
+impl Index<usize> for Stage {
+  type Output = u32;
+
+  fn index<'a>( &'a self, idx : usize ) -> &'a u32 {
+
+    if (self.inner.len() == 0) || (self.cursor + idx >= self.inner.len()) {
+      panic!( "Can't resize when not mutably borrowed!" );
+    }
+
+    &self.inner[self.cursor + idx]
+  }
+}
+
+impl IndexMut<usize> for Stage {
+
+  fn index_mut<'a>( &'a mut self, idx : usize ) -> &'a mut u32 {
+
+    if (self.inner.len() == 0) || (self.cursor + idx >= self.inner.len()) {
+      self.inner.resize( self.cursor + idx + 1, 0 );
+    }
+
+    &mut self.inner[self.cursor + idx]
+  }
+}
 
 // A code stack
 #[derive(Clone)]
@@ -291,7 +309,7 @@ pub enum TaskStatus {
 // A single unit of concurrent execution
 pub struct Task {
   pub constants : Arc<ConstantTable>,
-  pub stack : Stack,
+  pub stage : Stage,
   pub code  : Code,
 }
 
@@ -300,18 +318,38 @@ impl Task {
   pub fn new( code : Code, ct : Arc<ConstantTable> ) -> Task {
     Task { constants: ct
          , code     : code
-         , stack    : Vec::new() }
+         , stage    : Stage::new( 64 ) }
   }
 
   pub fn step( &mut self ) -> TaskStatus {
     // TODO: Move this execution part to it's own
     match self.code.next() {
       Some( op ) => {
-        let v = op.execute( self );
-        v
+        op.execute( self )
       },
       None => TaskStatus::Dead
     }
+  }
+
+  pub fn expand( &mut self, c : ConstRef ) {
+    self.code.code.push_all( self.constants.get_chunk( c ) );
+  }
+
+  fn temporary_offset( &mut self, offset : usize ) {
+    if offset == 0 {
+      return
+    }
+
+    // Push a reverse offset op
+    let ro : &[u8; 2];
+    unsafe {
+      ro = transmute( &((-(offset as isize)) as i16) as *const i16 );
+    }
+    self.code.code.push( ro[0] );
+    self.code.code.push( ro[1] );
+    self.code.code.push( 0x23 );
+
+    self.stage.offset( offset as isize );
   }
 }
 

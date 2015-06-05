@@ -14,7 +14,7 @@ use runtime::{ RuntimeSettings
              , TaskStatus };
 
 fn ff_print( t : &mut Task ) -> TaskStatus {
-  println!( "{}", t.stack.pop().unwrap() );
+  println!( "{}", t.stage[0] );
   TaskStatus::Ok
 }
 
@@ -44,23 +44,25 @@ fn main() {
     , L, L, L, L, L, L, L, L             // 08 - u32_lt
     , A, A, A, A, A, A, A, A             // 16 - u32_add
     , S, S, S, S, S, S, S, S             // 24 - u32_sub
-    , 9, 0, 0, 0                         // 32 - main
-    , 41, 0, 0, 0, 0, 0x04               //   call 0 fib
-    , 3, 0, 0x22                         //   set 0 3
-    , 19, 0, 0, 0                        // 41 - fib
-    , 63, 0, 0, 0, 60, 0, 0, 0, 1, 0x03  //   if 1 fib::then::0 fib::else::0
-    , 8, 0, 0, 0, 2, 0x08                //   binop 1 u32_lt
-    , 2, 1, 0x22                         //   set 1 2
-    , 3, 0, 0                            // 60 - fib::then::0
+    , 15, 0, 0, 0                         // 32 - main
+    , 0, 0, 0, 0, 0, 0x05                //   call print
+    , 51, 0, 0, 0, 0, 0x04               //   call 0 fib
+    , 6, 0, 0x22                         //   set 0 3
+    , 22, 0, 0, 0                        // 51 - fib
+    , 84, 0, 0, 0, 77, 0, 0, 0, 1, 0x03  //   if 1 fib::then::0 fib::else::0
+    , 8, 0, 0, 0, 1, 0x08                //   binop 1 u32_lt
+    , 2, 2, 0x22                         //   set 2 2
+    , 1, 0, 0x21                         //   move 0 1
+    , 3, 0, 0, 0                         // 77 - fib::then::0
     , 1, 0, 0x22                         //   set 0 1
-    , 45, 0, 0, 0                        // 63 - fib::else::0
+    , 45, 0, 0, 0                        // 84 - fib::else::0
     , 0, 1, 0x21                         //   move 1 0
     , 16, 0, 0, 0, 1, 0x08               //   binop 1 u32_add
-    , 41, 0, 0, 0, 2, 0x04               //   call 2 fib
+    , 51, 0, 0, 0, 2, 0x04               //   call 2 fib
     , 24, 0, 0, 0, 2, 0x08               //   binop 2 u32_sub
     , 2, 3, 0x22                         //   set 3 2
     , 2, 0, 0x21                         //   move 0 2
-    , 41, 0, 0, 0, 1, 0x04               //   call 1 fib
+    , 51, 0, 0, 0, 1, 0x04               //   call 1 fib
     , 24, 0, 0, 0, 1, 0x08               //   binop 1 u32_sub
     , 1, 2, 0x22                         //   set 2 1
     , 1, 0, 0x21                         //   move 0 1
