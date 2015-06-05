@@ -6,13 +6,9 @@ use ::num_cpus;
 
 // TODO: Split this up into smaller files
 
-// The representation of functions
-#[derive(Clone)]
-pub struct Function {
-  pub code  : Code
-}
-
 type ForeignFunction = fn( &mut Task ) -> TaskStatus;
+type ForeignMap      = fn( u32, Arc<ConstantTable> ) -> u32;
+type ForeignBinop    = fn( u32, u32, Arc<ConstantTable> ) -> u32;
 
 #[derive(Debug, Clone)]
 enum OpDecodeError {
@@ -24,16 +20,20 @@ enum OpDecodeError {
 #[derive(Copy, Clone, Debug)]
 pub enum Op {
   Nop,
-  Push( u32 ),
-  Pop,
-  Dup,
-  Swap,
-  Peek( u32 ),
-  Rem( u32 ),
   Yield,
-  Call( ConstRef ),
-  Callf( ConstRef ),
-  If( ConstRef, ConstRef )
+  Spawn( ConstRef ),
+  If( usize, ConstRef, ConstRef ),
+  Call( usize, ConstRef ),
+  Callf( usize, ConstRef ),
+  Map( usize, ConstRef ),
+  Mapto( usize, usize, ConstRef ),
+  Binop( usize, ConstRef ),
+  Callv( usize, usize ),
+
+  Swap( usize, usize ),
+  Move( usize, usize ),
+  Set( usize, u32 ),
+  Cursor( isize )
 }
 
 struct OpCursor<'a> {
@@ -42,7 +42,7 @@ struct OpCursor<'a> {
 }
 
 impl<'a> OpCursor<'a> {
-  fn next_u32( &mut self, op : u8 ) -> Result<u32, OpDecodeError> {
+  fn next_u32( &mut self, op : u8 ) -> Result<usize, OpDecodeError> {
     // Make sure there's actually a u32 available, if not
     if self.index < 4 {
       // Error out with the op that required it and where it railed
@@ -54,7 +54,32 @@ impl<'a> OpCursor<'a> {
         // Transmute the the &[u8; 4] to a &u32 since they have the same width
         v = transmute( &self.code[self.index] as *const u8 );
       }
-      Ok( *v )
+      Ok( (*v) as usize )
+    }
+  }
+
+  fn next_u8( &mut self, op : u8 ) -> Result<usize, OpDecodeError> {
+    if self.index == 0 {
+      Err( OpDecodeError::NoArgument( op, self.index ) )
+    } else {
+      self.index -= 1;
+      Ok( self.code[self.index] as usize )
+    }
+  }
+
+  fn next_i16( &mut self, op : u8 ) -> Result<isize, OpDecodeError> {
+    // Make sure there's actually a u32 available, if not
+    if self.index < 2 {
+      // Error out with the op that required it and where it railed
+      Err( OpDecodeError::NoArgument( op, self.index ) )
+    } else {
+      self.index -= 2;
+      let v : &i16;
+      unsafe {
+        // Transmute the the &[u8; 4] to a &u32 since they have the same width
+        v = transmute( &self.code[self.index] as *const u8 );
+      }
+      Ok( (*v) as isize )
     }
   }
 }
@@ -65,34 +90,66 @@ impl Op {
     let op = code[code.len() - 1];
     Ok( match op {
       0x00 => (Op::Nop, 1),
-      0x01 => {
+      0x01 => (Op::Yield, 1),
+      0x02 => {
         let val = try!( cursor.next_u32( op ) );
-        (Op::Push( val ), 1 + 4)
+        (Op::Spawn( val ), 1 + 4)
       },
-      0x02 => (Op::Pop, 1),
-      0x03 => (Op::Dup, 1),
-      0x04 => (Op::Swap, 1),
+      0x03 => {
+        let x = try!( cursor.next_u8( op ) );
+        let t = try!( cursor.next_u32( op ) );
+        let e = try!( cursor.next_u32( op ) );
+        (Op::If( x, t, e ) , 1 + 1 + 4 + 4 )
+      },
+      0x04 => {
+        let x = try!( cursor.next_u8( op ) );
+        let f = try!( cursor.next_u32( op ) );
+        (Op::Call( x, f ) , 1 + 1 + 4 )
+      },
       0x05 => {
-        let val = try!( cursor.next_u32( op ) );
-        (Op::Peek( val ), 1 + 4)
+        let x = try!( cursor.next_u8( op ) );
+        let f = try!( cursor.next_u32( op ) );
+        (Op::Callf( x, f ) , 1 + 1 + 4 )
       },
       0x06 => {
-        let val = try!( cursor.next_u32( op ) );
-        (Op::Rem( val ), 1 + 4)
+        let x = try!( cursor.next_u8( op ) );
+        let f = try!( cursor.next_u32( op ) );
+        (Op::Map( x, f ) , 1 + 1 + 4 )
       },
-      0x07 => (Op::Yield, 1),
+      0x07 => {
+        let x = try!( cursor.next_u8( op ) );
+        let y = try!( cursor.next_u8( op ) );
+        let f = try!( cursor.next_u32( op ) );
+        (Op::Mapto( x, y, f ) , 1 + 1 + 1 + 4 )
+      },
       0x08 => {
-        let val = try!( cursor.next_u32( op ) );
-        (Op::Call( val ), 1 + 4)
+        let x = try!( cursor.next_u8( op ) );
+        let f = try!( cursor.next_u32( op ) );
+        (Op::Binop( x, f ) , 1 + 1 + 4 )
       },
       0x09 => {
-        let val = try!( cursor.next_u32( op ) );
-        (Op::Callf( val ), 1 + 4)
+        let x = try!( cursor.next_u8( op ) );
+        let v = try!( cursor.next_u8( op ) );
+        (Op::Callv( x, v ) , 1 + 1 + 1 )
       },
-      0x0A => {
-        let then_code = try!( cursor.next_u32( op ) );
-        let else_code = try!( cursor.next_u32( op ) );
-        (Op::If( then_code, else_code ), 1 + 4 + 4 )
+      0x20 => {
+        let x = try!( cursor.next_u8( op ) );
+        let y = try!( cursor.next_u8( op ) );
+        (Op::Swap( x, y ) , 1 + 1 + 1 )
+      },
+      0x21 => {
+        let x = try!( cursor.next_u8( op ) );
+        let y = try!( cursor.next_u8( op ) );
+        (Op::Move( x, y ) , 1 + 1 + 1 )
+      },
+      0x22 => {
+        let x = try!( cursor.next_u8( op ) );
+        let v = try!( cursor.next_u8( op ) ) as u32;
+        (Op::Set( x, v ) , 1 + 1 + 1 )
+      },
+      0x23 => {
+        let o = try!( cursor.next_i16( op ) );
+        (Op::Cursor( o ) , 1 + 2 )
       },
       _    => return Err( OpDecodeError::UnknownOp( op, code.len() - 1 ) )
     } )
@@ -100,8 +157,6 @@ impl Op {
 
   // TODO: Don't panic, actually return an error
   fn execute( &self, task : &mut Task ) -> TaskStatus {
-    use self::Op::{ Nop, Push, Pop, Dup, Swap, Peek
-                  , Rem, Yield, Call, Callf, If };
 
     // Higher bound index of the stack
     let high = if task.stack.len() == 0 {
@@ -110,7 +165,7 @@ impl Op {
       task.stack.len() - 1
     };
 
-    match *self {
+    /*match *self {
       Nop => {},
       Push( v ) => task.stack.push( v ),
       Pop =>
@@ -152,7 +207,7 @@ impl Op {
       },
       Callf( ff ) => {
         // Get and call the foreign function
-        return task.constants.get_foreign_function( ff as usize )( task );
+        return task.constants.get::<ForeignFunction>( ff as usize )( task );
       },
       If( t, e ) => {
         assert!( !task.stack.is_empty() );
@@ -162,14 +217,33 @@ impl Op {
         } else {
           Call( e ).execute( task );
         }
-      }
-    }
+      },
+      Spawn( f ) => {
+        let code = task.constants.get_code( f as usize );
+        let ntask = Task::new( code, task.constants.clone() );
+        return TaskStatus::Spawning( ntask )
+      },
+      Maptop( f ) => {
+        assert!( !task.stack.is_empty() );
 
+        let map = task.constants.get::<ForeignMap>( f as usize );
+        map( &mut task.stack[high], task.constants.clone() );
+      },
+      Binop( f ) => {
+        assert!( task.stack.len() >= 2 );
+
+        let binop = task.constants.get::<ForeignBinop>( f as usize );
+        let (b, a) = (task.stack[high], task.stack[high - 1]);
+        task.stack[high - 1] = binop( a, b, task.constants.clone() );
+        // Remove the last element
+        task.stack.truncate( high );
+      }
+    }*/
     TaskStatus::Ok
   }
 }
 
-pub type ConstRef = u32;
+pub type ConstRef = usize;
 
 // A tasks execution stack
 pub type Stack = Vec<u32>;
@@ -210,7 +284,8 @@ impl Iterator for Code {
 pub enum TaskStatus {
   Ok,
   Dead,
-  Yielded
+  Yielded,
+  Spawning( Task )
 }
 
 // A single unit of concurrent execution
@@ -263,17 +338,17 @@ impl ConstantTable {
     self.get_code( mmain.pop().unwrap().1 as usize )
   }
 
-  pub fn get_foreign_function( &self, idx : usize ) -> ForeignFunction {
+  pub fn get<T : Copy>( &self, idx : usize ) -> T {
     assert!( idx < self.constants.len() );
 
-    let ff_size = size_of::<ForeignFunction>();
+    let ff_size = size_of::<T>();
 
     assert!( idx + ff_size <= self.constants.len() );
 
-    let ff : ForeignFunction;
+    let ff : T;
     unsafe {
       ff =
-        *transmute::<_, &ForeignFunction>( &self.constants[idx] as *const u8 );
+        *transmute::<_, &T>( &self.constants[idx] as *const u8 );
     }
 
     ff
@@ -363,7 +438,11 @@ impl Worker {
       match self.step_current_task() {
         TaskStatus::Ok => self.tick_task(),
         TaskStatus::Dead => self.remove_current_task(),
-        TaskStatus::Yielded => self.next_task()
+        TaskStatus::Yielded => self.next_task(),
+        TaskStatus::Spawning( t ) => {
+          self.outbox.send( WorkerReport::SpawnTask( t ) );
+          self.tick_task()
+        }
       }
 
       self.check_for_interrupt();

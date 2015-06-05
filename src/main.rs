@@ -4,11 +4,11 @@ extern crate num_cpus;
 
 mod runtime;
 
+use std::sync::Arc;
 use runtime::{ RuntimeSettings
              , Runtime
              , Op
              , ConstantTable
-             , Function
              , Code
              , Task
              , TaskStatus };
@@ -18,25 +18,16 @@ fn ff_print( t : &mut Task ) -> TaskStatus {
   TaskStatus::Ok
 }
 
-fn ff_less_than( t : &mut Task ) -> TaskStatus {
-  let b = t.stack.pop().unwrap();
-  let a = t.stack.pop().unwrap();
-  t.stack.push( if a < b { 1 } else { 0 } );
-  TaskStatus::Ok
+fn ff_less_than( a : u32, b : u32, _ : Arc<ConstantTable> ) -> u32 {
+  if a < b { 1 } else { 0 }
 }
 
-fn ff_add( t : &mut Task ) -> TaskStatus {
-  let b = t.stack.pop().unwrap();
-  let a = t.stack.pop().unwrap();
-  t.stack.push( a + b );
-  TaskStatus::Ok
+fn ff_add( a : u32, b : u32, _ : Arc<ConstantTable> ) -> u32 {
+  a + b
 }
 
-fn ff_sub( t : &mut Task ) -> TaskStatus {
-  let b = t.stack.pop().unwrap();
-  let a = t.stack.pop().unwrap();
-  t.stack.push( a - b );
-  TaskStatus::Ok
+fn ff_sub( a : u32, b : u32, _ : Arc<ConstantTable> ) -> u32 {
+  a - b
 }
 
 fn main() {
@@ -49,50 +40,47 @@ fn main() {
   let S = 0xFC;
 
   let mut f_main = vec![ 
-      15, 0, 0, 0                    //   0  - 3     main
-    , 100, 0, 0, 0, 0x09             //   4  - 8     
-    , 19, 0, 0, 0, 0x08              //   9  - 13    
-    , 6, 0, 0, 0, 0x01               //  14 - 18    
-    , 20, 0, 0, 0                    //  19 - 22    fib
-    , 53, 0, 0, 0, 43, 0, 0, 0, 0x0A //  23 - 31    
-    , 108, 0, 0, 0, 0x09             //  32 - 36    
-    , 2, 0, 0, 0, 0x01               //  37 - 41    
-    , 0x03                           //  42         
-    , 6, 0, 0, 0                     //  43 - 46    fib::then
-    , 1, 0, 0, 0, 0x01               //  47 - 51    
-    , 0x2                            //  52         
-    , 43, 0, 0, 0                    //  53 - 56    fib::else
-    , 1, 0, 0, 0, 0x06               //  57 - 61    
-    , 116, 0, 0, 0, 0x09             //  62 - 66    
-    , 19, 0, 0, 0, 0x08              //  67 - 71    
-    , 124, 0, 0, 0, 0x09             //  72 - 76    
-    , 1, 0, 0, 0, 0x01               //  77 - 81    
-    , 0x04                           //  81         
-    , 19, 0, 0, 0, 0x08              //  82 - 86    
-    , 124, 0, 0, 0, 0x09             //  87 - 91    
-    , 2, 0, 0, 0, 0x01               //  92 - 96    
-    , 0x03                           //  97         
-    , 0x03                           //  98         
-    , P, P, P, P, P, P, P, P         //  99 - 107
-    , L, L, L, L, L, L, L, L         // 108 - 115
-    , A, A, A, A, A, A, A, A         // 116 - 123
-    , S, S, S, S, S, S, S, S         // 124 - 131
+      P, P, P, P, P, P, P, P             // 00 - print
+    , L, L, L, L, L, L, L, L             // 08 - u32_lt
+    , A, A, A, A, A, A, A, A             // 16 - u32_add
+    , S, S, S, S, S, S, S, S             // 24 - u32_sub
+    , 9, 0, 0, 0                         // 32 - main
+    , 41, 0, 0, 0, 0, 0x04               //   call 0 fib
+    , 3, 0, 0x22                         //   set 0 3
+    , 19, 0, 0, 0                        // 41 - fib
+    , 63, 0, 0, 0, 60, 0, 0, 0, 1, 0x03  //   if 1 fib::then::0 fib::else::0
+    , 8, 0, 0, 0, 2, 0x08                //   binop 1 u32_lt
+    , 2, 1, 0x22                         //   set 1 2
+    , 3, 0, 0                            // 60 - fib::then::0
+    , 1, 0, 0x22                         //   set 0 1
+    , 45, 0, 0, 0                        // 63 - fib::else::0
+    , 0, 1, 0x21                         //   move 1 0
+    , 16, 0, 0, 0, 1, 0x08               //   binop 1 u32_add
+    , 41, 0, 0, 0, 2, 0x04               //   call 2 fib
+    , 24, 0, 0, 0, 2, 0x08               //   binop 2 u32_sub
+    , 2, 3, 0x22                         //   set 3 2
+    , 2, 0, 0x21                         //   move 0 2
+    , 41, 0, 0, 0, 1, 0x04               //   call 1 fib
+    , 24, 0, 0, 0, 1, 0x08               //   binop 1 u32_sub
+    , 1, 2, 0x22                         //   set 2 1
+    , 1, 0, 0x21                         //   move 0 1
   ] ;
 
   unsafe {
     let mut p : &mut (fn( &mut Task ) -> TaskStatus) =
-      transmute( (&mut f_main[100] as *mut u8) );
+      transmute( (&mut f_main[0] as *mut u8) );
     *p = ff_print;
-    p = transmute( (&mut f_main[108] as *mut u8) );
-    *p = ff_less_than;
-    p = transmute( (&mut f_main[116] as *mut u8) );
-    *p = ff_add;
-    p = transmute( (&mut f_main[124] as *mut u8) );
-    *p = ff_sub;
+    let mut o : &mut (fn( u32, u32, Arc<ConstantTable> ) -> u32) =
+      transmute( (&mut f_main[8] as *mut u8) );
+    *o = ff_less_than;
+    o = transmute( (&mut f_main[16] as *mut u8) );
+    *o = ff_add;
+    o = transmute( (&mut f_main[24] as *mut u8) );
+    *o = ff_sub;
   }
   
   let ct =
-    ConstantTable { names: vec![ ("main".to_string(), 0) ]
+    ConstantTable { names: vec![ ("main".to_string(), 32) ]
                   , constants: f_main };
 
   let mut rt = Runtime::new( RuntimeSettings::default(), ct );
