@@ -2,16 +2,16 @@
 
 extern crate num_cpus;
 
+mod op;
+mod task;
+mod worker;
 mod runtime;
 
 use std::sync::Arc;
-use runtime::{ RuntimeSettings
-             , Runtime
-             , Op
-             , ConstantTable
-             , Code
-             , Task
-             , TaskStatus };
+
+use task::{ Task, TaskStatus };
+use runtime::{ RuntimeSettings, Runtime, ConstantTable };
+
 
 fn ff_print( t : &mut Task ) -> TaskStatus {
   println!( "{}", t.stage[0] );
