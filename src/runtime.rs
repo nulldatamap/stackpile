@@ -2,14 +2,12 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::Arc;
 use std::thread;
 use std::mem::{size_of, transmute};
-use std::ops::{Index, IndexMut};
 use ::num_cpus;
 
 use task::{Task, Code};
 use worker::{Worker, WorkerId, WorkerCommand, WorkerReport, WorkerHandle};
 
-// TODO: Split this up into smaller files
-
+// The index type of the constant table
 pub type ConstRef = usize;
 
 // An immutable data-structure to store all constant data needed at runtime
@@ -35,6 +33,8 @@ impl ConstantTable {
     self.get_code( mmain.pop().unwrap().1 as usize )
   }
 
+
+  // Gets an arbitary copiable type from the raw bytes
   pub fn get<T : Copy>( &self, idx : usize ) -> T {
     assert!( idx < self.constants.len() );
 
@@ -51,6 +51,7 @@ impl ConstantTable {
     ff
   }
 
+  // Get a chunked peice of a data ( 32 bit length field followed by it's contents )
   pub fn get_chunk( &self, idx : usize ) -> &[u8] {
     // Make sure the index in is bounds
     assert!( idx < self.constants.len() );
@@ -72,6 +73,7 @@ impl ConstantTable {
     &self.constants[low..high]
   }
 
+  // Reads a raw chunk and turns it into a code structure
   pub fn get_code( &self, idx : usize ) -> Code {
     let code_bytes = self.get_chunk( idx );
     Code::new( code_bytes.to_vec() )

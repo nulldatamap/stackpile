@@ -52,6 +52,7 @@ impl Worker {
            , current_task : 0 }
   }
 
+  // Start's the worker's main loop
   pub fn run( &mut self ) {
     self.next_task();
 
@@ -81,6 +82,7 @@ impl Worker {
     }
   }
 
+  // Switches to the next task, or waits for a task to be assigned
   fn next_task( &mut self ) {
     // If there's no tasks, wait for one
     if self.tasks.len() == 0 {
@@ -95,6 +97,7 @@ impl Worker {
     self.current_task = ( self.current_task + 1 ) % self.tasks.len();
   }
 
+  // Wait's for a task to be assigned
   fn wait_for_task( &mut self ) {
     // Unwrap because if this call fails, our scheduler has died, and 
     // at that point, does anything really matter...?
@@ -108,6 +111,7 @@ impl Worker {
     }
   }
 
+  // Executes a single step of the current task
   fn step_current_task( &mut self ) -> TaskStatus {
     let task = &mut self.tasks[self.current_task];
     task.step()
@@ -132,6 +136,7 @@ impl Worker {
     }
   }
 
+  // Remove a dead task and assigns a new one
   fn remove_current_task( &mut self ) {
     // TODO: Do we actually care about task order?
     //       If yes then we use remove() else swap_remove()

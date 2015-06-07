@@ -4,6 +4,7 @@ use std::mem::transmute;
 use task::{TaskStatus, Task};
 use runtime::{ConstRef, ConstantTable};
 
+// The function types of different kinds of foreign functions
 type ForeignFunction = fn( &mut Task ) -> TaskStatus;
 type ForeignMap      = fn( u32, Arc<ConstantTable> ) -> u32;
 type ForeignBinop    = fn( u32, u32, Arc<ConstantTable> ) -> u32;
@@ -14,7 +15,7 @@ pub enum OpDecodeError {
   NoArgument( u8, usize )
 }
 
-// An operation that can be executed
+// An operation that can be executed, spec in `opcodes.md`
 #[derive(Copy, Clone, Debug)]
 pub enum Op {
   Nop,
@@ -34,6 +35,7 @@ pub enum Op {
   Cursor( isize )
 }
 
+// A reader's cursor for decoding op-codes
 struct OpCursor<'a> {
   index : usize,
   code  : &'a [u8]
@@ -83,78 +85,94 @@ impl<'a> OpCursor<'a> {
 }
 
 impl Op {
-  pub fn decode( code : &[u8] ) -> Result<(Op, usize), OpDecodeError> {
+  // Tries to decode an instruction
+  pub fn decode( code : &[u8] ) -> Result<Op, OpDecodeError> {
     let mut cursor = OpCursor { index: code.len() - 1, code: code };
     let op = code[code.len() - 1];
 
     Ok( match op {
-      0x00 => (Op::Nop, 1),
-      0x01 => (Op::Yield, 1),
+      0x00 => Op::Nop,
+      0x01 => Op::Yield,
       0x02 => {
         let val = try!( cursor.next_u32( op ) );
-        (Op::Spawn( val ), 1 + 4)
+        Op::Spawn( val )
       },
       0x03 => {
         let x = try!( cursor.next_u8( op ) );
         let t = try!( cursor.next_u32( op ) );
         let e = try!( cursor.next_u32( op ) );
-        (Op::If( x, t, e ) , 1 + 1 + 4 + 4 )
+        Op::If( x, t, e )
       },
       0x04 => {
         let x = try!( cursor.next_u8( op ) );
         let f = try!( cursor.next_u32( op ) );
-        (Op::Call( x, f ) , 1 + 1 + 4 )
+        Op::Call( x, f )
       },
       0x05 => {
         let x = try!( cursor.next_u8( op ) );
         let f = try!( cursor.next_u32( op ) );
-        (Op::Callf( x, f ) , 1 + 1 + 4 )
+        Op::Callf( x, f )
       },
       0x06 => {
         let x = try!( cursor.next_u8( op ) );
         let f = try!( cursor.next_u32( op ) );
-        (Op::Map( x, f ) , 1 + 1 + 4 )
+        Op::Map( x, f )
       },
       0x07 => {
         let x = try!( cursor.next_u8( op ) );
         let y = try!( cursor.next_u8( op ) );
         let f = try!( cursor.next_u32( op ) );
-        (Op::Mapto( x, y, f ) , 1 + 1 + 1 + 4 )
+        Op::Mapto( x, y, f )
       },
       0x08 => {
         let x = try!( cursor.next_u8( op ) );
         let f = try!( cursor.next_u32( op ) );
-        (Op::Binop( x, f ) , 1 + 1 + 4 )
+        Op::Binop( x, f )
       },
       0x09 => {
         let x = try!( cursor.next_u8( op ) );
         let v = try!( cursor.next_u8( op ) );
-        (Op::Callv( x, v ) , 1 + 1 + 1 )
+        Op::Callv( x, v )
       },
       0x20 => {
         let x = try!( cursor.next_u8( op ) );
         let y = try!( cursor.next_u8( op ) );
-        (Op::Swap( x, y ) , 1 + 1 + 1 )
+        Op::Swap( x, y )
       },
       0x21 => {
         let x = try!( cursor.next_u8( op ) );
         let y = try!( cursor.next_u8( op ) );
-        (Op::Move( x, y ) , 1 + 1 + 1 )
+        Op::Move( x, y )
       },
       0x22 => {
         let x = try!( cursor.next_u8( op ) );
         let v = try!( cursor.next_u8( op ) ) as u32;
-        (Op::Set( x, v ) , 1 + 1 + 1 )
+        Op::Set( x, v )
       },
       0x23 => {
         let o = try!( cursor.next_i16( op ) );
-        (Op::Cursor( o ) , 1 + 2 )
+        Op::Cursor( o )
       },
       _    => return Err( OpDecodeError::UnknownOp( op, code.len() - 1 ) )
     } )
   }
 
+  // Returns how wide each instruction is in bytes ( in it's encoded form )
+  pub fn byte_width( &self ) -> usize {
+    use self::Op::*;
+
+    match *self {
+      Nop | Yield => 1,
+      Callv( .. ) | Swap( .. ) | Move( .. ) | Set( .. ) | Cursor( .. ) => 3,
+      Spawn( .. ) => 5,
+      Call( .. ) | Callf( .. ) | Map( .. ) | Binop( .. ) => 6,
+      Mapto( .. ) => 7,
+      If( .. ) => 10,
+    }
+  }
+
   // TODO: Don't panic, actually return an error
+  // Executes an instruction in a given task
   pub fn execute( &self, task : &mut Task ) -> TaskStatus {
     use self::Op::*;
 

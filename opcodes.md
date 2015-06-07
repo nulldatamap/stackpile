@@ -42,7 +42,7 @@ Group - Flow control 0x00-0x1F:
   - Yields the current task
 
   SPAWN F
-  - ( 9)  02 FF FF FF FF     
+  - ( 5)  02 FF FF FF FF     
   - Spawn a new task running F
 
   IF X T E

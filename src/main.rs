@@ -44,7 +44,7 @@ fn main() {
     , L, L, L, L, L, L, L, L             // 08 - u32_lt
     , A, A, A, A, A, A, A, A             // 16 - u32_add
     , S, S, S, S, S, S, S, S             // 24 - u32_sub
-    , 15, 0, 0, 0                         // 32 - main
+    , 15, 0, 0, 0                        // 32 - main
     , 0, 0, 0, 0, 0, 0x05                //   call print
     , 51, 0, 0, 0, 0, 0x04               //   call 0 fib
     , 6, 0, 0x22                         //   set 0 3
